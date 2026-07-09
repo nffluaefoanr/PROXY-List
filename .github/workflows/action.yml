@@ -2,7 +2,7 @@ name: PROXY Updater
 
 on:
   schedule:
-    - cron: '0 */3 * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
     inputs:
       logLevel:
@@ -26,10 +26,8 @@ jobs:
         python-version: 3.13
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install requests
-    - run: curl -s -L ${{secrets.UPDATER}} -o updater.py
-    - run: python updater.py
+        pipx install proxy-check-i --force
+    - run: token=${{secrets.TOKEN}} proxy-check-i
     - name: Commit files
       run: |
         git config --local user.email ${{ secrets.GIT_EMAIL }}
