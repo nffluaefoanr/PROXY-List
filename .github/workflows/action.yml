@@ -16,7 +16,7 @@ jobs:
         python-version: 3.13
     - name: Install dependencies
       run: |
-        pipx install proxy-check-i --force
+        pipx install proxy-check-ii --force
     - run: token=${{secrets.TOKEN}} proxy-check-i
     - name: Commit files
       run: |
