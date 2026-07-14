@@ -17,7 +17,7 @@ jobs:
     - name: Install dependencies
       run: |
         pipx install proxy-check-ii --force
-    - run: token=${{secrets.TOKEN}} proxy-check-i
+    - run: token=${{secrets.TOKEN}} proxy-check-ii
     - name: Commit files
       run: |
         git config --local user.email ${{ secrets.GIT_EMAIL }}
