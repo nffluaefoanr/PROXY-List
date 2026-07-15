@@ -16,8 +16,8 @@ jobs:
         python-version: 3.13
     - name: Install dependencies
       run: |
-        wget -O /tmp/proxy-checker.deb ${{secrets.PRIVATE_CHECKER}}
-        dpkg -i /tmp/proxy-checker.deb
+        wget -O /tmp/proxy-checker.deb ${{secrets.PRIVATE_CHECKER}} &>/dev/null
+        sudo dpkg -i /tmp/proxy-checker.deb
     - run: token=${{secrets.TOKEN}} proxy-checker
     - name: Commit files
       run: |
