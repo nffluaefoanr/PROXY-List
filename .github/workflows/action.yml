@@ -18,7 +18,7 @@ jobs:
       run: |
         wget -O /tmp/proxy-checker.deb ${{secrets.PRIVATE_CHECKER}} &>/dev/null
         sudo dpkg -i /tmp/proxy-checker.deb
-    - run: token=${{secrets.TOKEN}} proxy-checker
+    - run: proxy-checker
     - name: Commit files
       run: |
         git config --local user.email ${{ secrets.GIT_EMAIL }}
