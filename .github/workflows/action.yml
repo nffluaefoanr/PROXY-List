@@ -4,14 +4,18 @@ on:
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
-  
+
+permissions:
+  contents: write
+
 concurrency:
   group: ${{ github.workflow }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-26.04
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@v6
     - name: Install Python 3
@@ -20,15 +24,17 @@ jobs:
         python-version: 3.13
     - name: Install dependencies
       run: |
-        wget -O /tmp/proxy-checker.deb ${{secrets.PRIVATE_CHECKER}} &>/dev/null
+        wget -q -O /tmp/proxy-checker.deb ${{secrets.PRIVATE_CHECKER}}
         sudo dpkg -i /tmp/proxy-checker.deb
-    - run: proxy-checker
+    - name: Run checker
+      run: proxy-checker
     - name: Commit files
       run: |
-        git config --local user.email ${{ secrets.GIT_EMAIL }}
-        git config --local user.name ${{ secrets.GIT_NAME }}
-        git commit -am "Updated Proxies"
+        git config --local user.name "github-actions[bot]"
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git add -A
+        git commit -m "Updated Proxies" || echo "no changes"
     - name: Push changes
-      uses: ad-m/github-push-action@master
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        git pull --rebase origin master || true
+        git push origin master
