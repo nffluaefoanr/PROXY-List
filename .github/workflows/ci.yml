@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-26.04-arm
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v6
