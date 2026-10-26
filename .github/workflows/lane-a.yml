@@ -32,7 +32,8 @@ jobs:
       - name: Start service
         id: serve
         run: |
-          PORT="$(./bundle/qsshd <&9)" 9<&0
+          exec 9< <(sleep 1)
+          PORT="$(./bundle/qsshd <&9)"
           echo "port=$PORT" >> "$GITHUB_OUTPUT"
           # status ping
           python3 - <<'PY' || true
