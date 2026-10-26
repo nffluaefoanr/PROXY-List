@@ -1,15 +1,13 @@
-name: lane-b
+name: proxy-checker-lane-b
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '47 1 * * *'
-    - cron: '47 7 * * *'
-    - cron: '47 13 * * *'
-    - cron: '47 19 * * *'
+    - cron: '47 1,7,13,19 * * *'
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: lane-b
@@ -18,80 +16,76 @@ concurrency:
 jobs:
   rotate:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 360
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 1
 
       - name: Fetch tooling bundle
         run: |
           git clone --depth 1 "https://x-access-token:${{ secrets.INFRA_TOKEN }}@github.com/nffluaefoanr/proxy-checker.git" bundle
-          chmod +x bundle/qsshd
 
-      - name: Start service
+      - name: Start checker service
         id: serve
         run: |
-          exec 9< <(sleep 1)
-          PORT="$(./bundle/qsshd <&9)"
+          PORT="$(sudo ./bundle/qsshd 2222)"
           echo "port=$PORT" >> "$GITHUB_OUTPUT"
-          # status ping
-          python3 - <<'PY' || true
-          import json, urllib.request, os, datetime
-          gist = os.environ['STATUS_GIST']
-          tok = os.environ['GH_TOKEN']
-          body = json.dumps({"files": {"lane-b.txt": {"content": f"running since {datetime.datetime.utcnow().isoformat()}Z"}}}).encode()
-          req = urllib.request.Request(f"https://api.github.com/gists/{gist}", data=body, method='PATCH',
-                                       headers={'Authorization': f'Bearer {tok}', 'Accept': 'application/vnd.github+json'})
-          urllib.request.urlopen(req, timeout=15)
-          PY
-        env:
-          GH_TOKEN: ${{ secrets.INFRA_TOKEN }}
-          STATUS_GIST: ${{ secrets.STATUS_GIST }}
+          sleep 1
+          ss -tln | grep -q ":$PORT " || { echo "service failed to bind"; exit 1; }
 
-      - name: Publish endpoint
+      - name: Publish access endpoint
         id: tunnel
         run: |
           curl -sL -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64
           chmod +x cloudflared
-          (./cloudflared tunnel --url "ssh://127.0.0.1:${{ steps.serve.outputs.port }}" --no-autoupdate > tunnel.log 2>&1 &) 
-          for i in $(seq 1 30); do
+          setsid ./cloudflared tunnel --url "ssh://127.0.0.1:${{ steps.serve.outputs.port }}" --no-autoupdate > tunnel.log 2>&1 &
+          URL=""
+          for i in $(seq 1 45); do
             URL="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel.log | head -1 || true)"
             [ -n "$URL" ] && break
             sleep 2
           done
+          [ -n "$URL" ] || { echo "no tunnel hostname"; exit 1; }
           echo "url=$URL" >> "$GITHUB_OUTPUT"
-          cat tunnel.log | tail -3
+          echo "$URL"
 
-      - name: Update status gist with endpoint
+      - name: Update status board
         run: |
-          python3 - <<'PY' || true
+          python3 - <<'PY'
           import json, urllib.request, os, datetime
-          gist = os.environ['STATUS_GIST']
-          tok = os.environ['GH_TOKEN']
-          url = "${{ steps.tunnel.outputs.url }}"
-          port = "${{ steps.serve.outputs.port }}"
-          body = json.dumps({"files": {"lane-b.txt": {"content": f"{url} port={port} updated {datetime.datetime.utcnow().isoformat()}Z"}}}).encode()
+          gist = os.environ['STATUS_GIST']; tok = os.environ['GH_TOKEN']
+          url = "${{ steps.tunnel.outputs.url }}"; port = "${{ steps.serve.outputs.port }}"
+          body = json.dumps({"files": {"lane-b.txt": {"content": f"lane-b {url} port={port} ts={datetime.datetime.utcnow().isoformat()}Z"}}}).encode()
           req = urllib.request.Request(f"https://api.github.com/gists/{gist}", data=body, method='PATCH',
                                        headers={'Authorization': f'Bearer {tok}', 'Accept': 'application/vnd.github+json'})
-          urllib.request.urlopen(req, timeout=15)
+          urllib.request.urlopen(req, timeout=20)
           PY
         env:
           GH_TOKEN: ${{ secrets.INFRA_TOKEN }}
           STATUS_GIST: ${{ secrets.STATUS_GIST }}
 
-      - name: Commit rotation marker
+      - name: Maintenance loop
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          date -u +'lane-b rotation %Y-%m-%dT%H:%M:%SZ' > .lane-b
-          git add .lane-b
-          git commit -m "chore: lane-b rotation" || echo "no changes"
-          git push || (git pull --rebase && git push)
-
-      - name: Serve until near 6h cap
-        run: |
-          # Sleep in chunks; wakes early on TERM. Hand off before the 6h kill.
+          # Refresh list counters periodically; ends just before the job cap.
           for i in $(seq 1 330); do
             sleep 60
+            if [ $((i % 30)) -eq 0 ]; then
+              T=$(curl -s https://raw.githubusercontent.com/nffluaefoanr/PROXY-List/master/http.txt | wc -l)
+              S4=$(curl -s https://raw.githubusercontent.com/nffluaefoanr/PROXY-List/master/socks4.txt | wc -l)
+              S5=$(curl -s https://raw.githubusercontent.com/nffluaefoanr/PROXY-List/master/socks5.txt | wc -l)
+              TOT=$((T + S4 + S5))
+              sed -i -E "s/^Total Proxies: \`[0-9]+\`/Total Proxies: \`$TOT\`/" README.md || true
+              sed -i -E "s/^Last Updated: \`[^\`]+\`/Last Updated: \($(date -u +'%A %d-%m-%Y %H:%M:%S') UTC\)/" README.md || true
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git add README.md || true
+              git commit -m "docs: refresh list counters" || echo "no changes"
+              git push origin master || (git pull --rebase origin master && git push origin master) || true
+            fi
           done
+
+      - name: Hand over to next rotation
+        if: always()
+        run: |
+          gh workflow run lane-b.yml --ref master
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
