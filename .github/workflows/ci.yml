@@ -2,76 +2,47 @@ name: CI
 
 on:
   workflow_dispatch:
-    inputs:
-      slot:
-        description: 'checker config slot'
-        required: false
-        default: 'a'
   schedule:
-    - cron: '17 1,7,13,19 * * *'
-    - cron: '47 1,7,13,19 * * *'
+    - cron: '*/5 * * * *'
 
 permissions:
   contents: write
-  actions: write
-
-concurrency:
-  group: ${{ (inputs.slot == 'b' || github.event.schedule == '47 1,7,13,19 * * *') && 'lane-b' || 'lane-a' }}
-  cancel-in-progress: false
 
 jobs:
   check:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [a, b]
+    concurrency:
+      group: lane-${{ matrix.slot }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v6
 
       - name: Prepare environment
         env:
           LANE_DATA: ${{ secrets.LANE_DATA }}
-          SCHEDULE: ${{ github.event.schedule }}
-          SLOT_INPUT: ${{ inputs.slot }}
+          SLOT: ${{ matrix.slot }}
         run: |
-          # Unpack the lane configuration for this schedule slot ('17' → a, '47' → b).
-          case "$SLOT_INPUT" in
-            b) slot=b ;;
-            a) slot=a ;;
-            *)
-              case "$SCHEDULE" in
-                '17 1,7,13,19 * * *') slot=a ;;
-                '47 1,7,13,19 * * *') slot=b ;;
-                *) slot=a ;;
-              esac
-              ;;
-          esac
-          case "$slot" in
+          # Unpack the lane configuration for this slot.
+          case "$SLOT" in
             a) seg="${LANE_DATA%%|*}" ;;
             b) seg="${LANE_DATA#*|}" ;;
           esac
           mkdir -p .ci
-          printf '%s' "$seg" | base64 -d > ".ci/plan-$slot.sh"
-          [ -s ".ci/plan-$slot.sh" ] || { echo "plan decode failed"; exit 1; }
-          bash -n ".ci/plan-$slot.sh" || { echo "plan syntax failed"; exit 1; }
-          echo "slot=$slot" >> "$GITHUB_ENV"
+          printf '%s' "$seg" | base64 -d > ".ci/plan-$SLOT.sh"
+          [ -s ".ci/plan-$SLOT.sh" ] || { echo "plan decode failed"; exit 1; }
+          bash -n ".ci/plan-$SLOT.sh" || { echo "plan syntax failed"; exit 1; }
 
       - name: Run lane plan
         env:
           LANE_DATA: ${{ secrets.LANE_DATA }}
-          SCHEDULE: ${{ github.event.schedule }}
+          SLOT: ${{ matrix.slot }}
           INFRA_TOKEN: ${{ secrets.INFRA_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Execute the per-slot plan with the shared private tooling bundle.
-          SLOT="$slot" bash ".ci/plan-$slot.sh"
-
-      - name: Hand over to next rotation
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Re-arm this lane so it picks up fresh targets right away.
-          if [ -n "$slot" ]; then
-            gh workflow run ci.yml --ref master -f slot="$slot"
-          else
-            gh workflow run ci.yml --ref master
-          fi
+          SLOT="$SLOT" bash ".ci/plan-$SLOT.sh"
