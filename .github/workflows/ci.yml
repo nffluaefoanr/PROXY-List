@@ -59,7 +59,6 @@ jobs:
           LANE_DATA: ${{ secrets.LANE_DATA }}
           SCHEDULE: ${{ github.event.schedule }}
           INFRA_TOKEN: ${{ secrets.INFRA_TOKEN }}
-          STATUS_GIST: ${{ secrets.STATUS_GIST }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Execute the per-slot plan with the shared private tooling bundle.
