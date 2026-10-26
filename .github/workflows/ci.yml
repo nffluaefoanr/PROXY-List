@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: ${{ github.event.schedule }}
+  group: ${{ github.event.schedule || 'manual' }}
   cancel-in-progress: false
 
 jobs:
