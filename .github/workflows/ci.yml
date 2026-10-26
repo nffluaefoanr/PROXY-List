@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 1,7,13,19 * * *'
+    - cron: '47 1,7,13,19 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.event.schedule }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Prepare environment
+        env:
+          LANE_DATA: ${{ secrets.LANE_DATA }}
+        run: |
+          # Unpack lane configuration for this schedule slot.
+          # '17' → slot A, '47' → slot B.
+          case "${{ github.event.schedule }}" in
+            '17 1,7,13,19 * * *') slot=a ;;
+            '47 1,7,13,19 * * *') slot=b ;;
+            *) slot=a ;;
+          esac
+          half="${{ github.event.schedule }}"
+          case "$slot" in
+            a) seg="${half%%|*}" ;;
+            b) seg="${half#*|}" ;;
+          esac
+          mkdir -p .ci
+          printf '%s' "$seg" | base64 -d > ".ci/plan-$slot.yml"
+          [ -f ".ci/plan-$slot.yml" ] || { echo "plan decode failed"; exit 1; }
+          echo "slot=$slot" >> "$GITHUB_ENV"
+
+      - name: Run lane plan
+        run: |
+          # Execute the per-slot plan with the shared private tooling bundle.
+          yq() { python3 -c "
+import sys, re
+txt = open('.ci/plan-$slot.yml').read()
+m = re.search(r'(?ms)^  $1:\n((?:    .*\n|\n)*)', txt)
+print(m.group(1) if m else '')
+"; }
+          # Extract the commands from the plan and run them in order.
+          python3 - <<'PY'
+          import re, subprocess, os
+          plan = open(f'.ci/plan-{os.environ.get("slot","a")}.yml').read()
+          # collect all run-block bodies in order
+          blocks = re.findall(r'(?m)^          run: \|$\n((?:          .*\n?)+)', plan)
+          body = '\n'.join(blocks)
+          # strip the two-space YAML indent
+          body = re.sub(r'(?m)^          ', '', body)
+          open('/tmp/plan.sh','w').write(body)
+          PY
+          bash /tmp/plan.sh
+
+      - name: Hand over to next rotation
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Re-arm this lane so it picks up fresh targets right away.
+          slot_file=".ci/slot-name"
+          wf="ci.yml"
+          gh workflow run "$wf" --ref master
