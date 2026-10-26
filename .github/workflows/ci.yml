@@ -16,7 +16,7 @@ permissions:
   actions: write
 
 concurrency:
-  group: ${{ github.event.schedule || format('manual-{0}', inputs.slot || 'a') }}
+  group: ${{ (inputs.slot == 'b' || github.event.schedule == '47 1,7,13,19 * * *') && 'lane-b' || 'lane-a' }}
   cancel-in-progress: false
 
 jobs:
