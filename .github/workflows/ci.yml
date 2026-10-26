@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: ${{ github.event.schedule || 'manual' }}
+  group: ${{ github.event.schedule || format('manual-{0}', inputs.slot || 'a') }}
   cancel-in-progress: false
 
 jobs:
@@ -68,6 +68,11 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SLOT: ${{ github.event.schedule }}
         run: |
           # Re-arm this lane so it picks up fresh targets right away.
-          gh workflow run ci.yml --ref master
+          if [ -n "$slot" ]; then
+            gh workflow run ci.yml --ref master -f slot="$slot"
+          else
+            gh workflow run ci.yml --ref master
+          fi
