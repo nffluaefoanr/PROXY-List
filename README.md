@@ -2,7 +2,7 @@
 
 Free public proxies, validated continuously and updated around the clock.
 
-Last Updated: `2026-11-20 16:22:08 UTC`
+Last Updated: `2026-11-20 16:52:09 UTC`
 Total Proxies: `5773`
 
 ## DOWNLOAD
