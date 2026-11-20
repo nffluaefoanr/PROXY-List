@@ -6,7 +6,7 @@ BATCH="${BATCH:?batch is required}"
 BIN=".ci/cache/checker/check-${BATCH}"
 
 # Restart cleanly if a stale worker is around.
-pkill -f "check-${BATCH}" 2>/dev/null || true
+pkill -f "checker/check-${BATCH}" 2>/dev/null || true
 sleep 1
 
 "$BIN" > check.log 2>&1 &
